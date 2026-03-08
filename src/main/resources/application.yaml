@@ -1,11 +1,19 @@
   server:
     port: 8081
   spring:
-    rabbitmq:
-      host: localhost
-      port: 5672
-      username: guest
-      password: guest
+    kafka:
+      bootstrap-servers: localhost:9092
+      producer:
+        key-serializer: org.apache.kafka.common.serialization.StringSerializer
+        value-serializer: org.apache.kafka.common.serialization.StringSerializer
+        retries: 3
+        acks: all
+      consumer:
+        group-id: hmdp-group
+        key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+        auto-offset-reset: earliest
+        enable-auto-commit: false
     application:
       name: hmdp
     datasource:

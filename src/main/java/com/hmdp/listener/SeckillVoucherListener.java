@@ -1,20 +1,18 @@
 package com.hmdp.listener;
 
 import cn.hutool.json.JSONUtil;
+import com.hmdp.config.KafkaConfig;
 import com.hmdp.entity.VoucherOrder;
 import com.hmdp.service.impl.SeckillVoucherServiceImpl;
 import com.hmdp.service.impl.VoucherOrderServiceImpl;
-import com.rabbitmq.client.Channel;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.amqp.core.Message;
-import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
 
 @Component
-@RequiredArgsConstructor
 @Slf4j
 public class SeckillVoucherListener {
 
@@ -22,46 +20,42 @@ public class SeckillVoucherListener {
     SeckillVoucherServiceImpl seckillVoucherService;
     @Resource
     VoucherOrderServiceImpl voucherOrderService;
-    /**
-     * sheng  消费者1
-     * @param message
-     * @param channel
-     * @throws Exception
-     */
-    @RabbitListener(queues = "QA")
-    public void receivedA(Message message, Channel channel)throws Exception{
-        String msg=new String(message.getBody());
-        log.info("正常队列:");
-        VoucherOrder voucherOrder = JSONUtil.toBean(msg, VoucherOrder.class);
-        log.info(voucherOrder.toString());
-        voucherOrderService.save(voucherOrder);//保存到数据库
-        //数据库秒杀库存减一
-        Long voucherId=voucherOrder.getVoucherId();
-        seckillVoucherService.update()
-                .setSql("stock = stock - 1") // set stock = stock - 1
-                .eq("voucher_id", voucherId).gt("stock", 0) // where id = ? and stock > 0
-                .update();
 
+    /**
+     * 主消费者：消费秒杀订单消息
+     * 消费失败重试3次后，消息自动进入死信主题
+     */
+    @KafkaListener(topics = KafkaConfig.SECKILL_ORDER_TOPIC, containerFactory = "kafkaListenerContainerFactory")
+    public void receiveSeckillOrder(ConsumerRecord<String, String> record) {
+        String msg = record.value();
+        log.info("主题消费 - 收到秒杀订单消息, partition={}, offset={}", record.partition(), record.offset());
+        VoucherOrder voucherOrder = JSONUtil.toBean(msg, VoucherOrder.class);
+        log.info("订单信息: {}", voucherOrder);
+        handleOrder(voucherOrder);
     }
 
     /**
-     * sheng  消费者2
-     * @param message
-     * @throws Exception
+     * 死信消费者：处理消费失败的消息
      */
-    @RabbitListener(queues = "QD")
-    public void receivedD(Message message)throws Exception{
-        log.info("死信队列:");
-        String msg=new String(message.getBody());
-        VoucherOrder voucherOrder = JSONUtil.toBean(msg, VoucherOrder.class);
-        log.info(voucherOrder.toString());
+    @KafkaListener(topics = KafkaConfig.SECKILL_ORDER_DLT_TOPIC, containerFactory = "dltKafkaListenerContainerFactory")
+    public void receiveDltSeckillOrder(ConsumerRecord<String, String> record) {
+        String msg = record.value();
+        log.warn("死信主题消费 - 收到失败的秒杀订单消息, partition={}, offset={}", record.partition(), record.offset());
+        try {
+            VoucherOrder voucherOrder = JSONUtil.toBean(msg, VoucherOrder.class);
+            log.warn("死信订单信息: {}", voucherOrder);
+            handleOrder(voucherOrder);
+        } catch (Exception e) {
+            log.error("死信消息处理最终失败，需人工介入, message={}", msg, e);
+        }
+    }
+
+    private void handleOrder(VoucherOrder voucherOrder) {
         voucherOrderService.save(voucherOrder);
-
-        Long voucherId=voucherOrder.getVoucherId();
+        Long voucherId = voucherOrder.getVoucherId();
         seckillVoucherService.update()
-                .setSql("stock = stock - 1") // set stock = stock - 1
-                .eq("voucher_id", voucherId).gt("stock", 0) // where id = ? and stock > 0
+                .setSql("stock = stock - 1")
+                .eq("voucher_id", voucherId).gt("stock", 0)
                 .update();
-
     }
 }

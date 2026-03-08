@@ -6,6 +6,7 @@ import cn.hutool.core.util.StrUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.hmdp.config.KafkaConfig;
 import com.hmdp.dto.Result;
 import com.hmdp.entity.Shop;
 import com.hmdp.mapper.ShopMapper;
@@ -22,34 +23,30 @@ import org.springframework.data.geo.GeoResults;
 import org.springframework.data.redis.connection.RedisGeoCommands;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.domain.geo.GeoReference;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import javax.annotation.Generated;
 import javax.annotation.Resource;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.LongStream;
 
 import static com.hmdp.utils.RedisConstants.*;
 
-/**
- * <p>
- *  服务实现类
- * </p>
- *
- * @author 虎哥
- * @since 2021-12-22
- */
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
 @Service
 public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IShopService {
 
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+
+    @Resource
+    private KafkaTemplate<String, String> kafkaTemplate;
 
     @Resource
     private CacheClient clientClient;
@@ -236,10 +233,16 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         if(id==null){
             return Result.fail("店铺id不能为空");
         }
+        String cacheKey = CACHE_SHOP_KEY + id;
         //1.先修改数据库
         updateById(shop);
-        //2.删除缓存
-        stringRedisTemplate.delete(CACHE_SHOP_KEY+shop.getId());
+        //2.删除缓存，失败则发Kafka消息异步重试
+        try {
+            stringRedisTemplate.delete(cacheKey);
+        } catch (Exception e) {
+            log.warn("删除缓存失败，发送Kafka异步重试, cacheKey={}", cacheKey, e);
+            kafkaTemplate.send(KafkaConfig.CACHE_DELETE_TOPIC, cacheKey, cacheKey);
+        }
         return Result.ok();
     }
 
